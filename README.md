@@ -12,7 +12,7 @@
 
 </div>
 
-A small beginner-friendly Python program. You type a stock ticker (like `AAPL`), it downloads the company's filings data from the SEC, works out quarterly growth and operating margin, flags anything that looks wrong, prints a table and can save it as a CSV. The project folder is called `Financial analysis script`.
+A Python program where you type a stock ticker (like `AAPL`), it downloads the company's filings data from the SEC, works out quarterly growth and operating margin, flags anything that looks wrong, prints a table and can save it as a CSV. 
 
 ## Why
 
