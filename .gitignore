@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*_quarterly_summary.csv
+.venv/
+.DS_Store
