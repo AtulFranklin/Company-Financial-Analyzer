@@ -2,17 +2,19 @@
 
 # Quarterly Financial Analyzer
 
-**Pull a company's last quarters of revenue and operating income from SEC EDGAR, with growth, margins and data-quality flags.**
+**Pull a company's last quarters of revenue and operating income from SEC EDGAR, with growth, margins and data-quality flags. A command line tool plus a small REST API (FastAPI) with a PostgreSQL cache.**
 
 ![python](https://img.shields.io/badge/python-3.9%2B-blue.svg)
 ![data](https://img.shields.io/badge/data-SEC%20EDGAR-informational.svg)
-![dependencies](https://img.shields.io/badge/dependencies-requests-lightgrey.svg)
+![fastapi](https://img.shields.io/badge/api-FastAPI-009688.svg)
+![postgresql](https://img.shields.io/badge/database-PostgreSQL-336791.svg)
+![dependencies](https://img.shields.io/badge/dependencies-requests%20%7C%20fastapi%20%7C%20psycopg-lightgrey.svg)
 ![tests](https://img.shields.io/badge/tests-unittest-green.svg)
 ![api key](https://img.shields.io/badge/api%20key-not%20required-brightgreen.svg)
 
 </div>
 
-A Python program where you type a stock ticker (like `AAPL`), it downloads the company's filings data from the SEC, works out quarterly growth and operating margin, flags anything that looks wrong, prints a table and can save it as a CSV. 
+A Python program where you type a stock ticker (like `AAPL`), it downloads the company's filings data from the SEC, works out quarterly growth and operating margin, flags anything that looks wrong, prints a table and can save it as a CSV. The same analysis is also available as a small REST API that keeps results in PostgreSQL, see [API and database](#api-and-database).
 
 ## Why
 
@@ -26,7 +28,10 @@ Quarterly numbers are easy to get wrong by hand: fiscal quarters differ from cal
 - Restatements detected, the latest value is used and both numbers are shown
 - Data flags for missing quarters, zero or negative revenue, and suspicious values
 - Optional CSV export that opens in Excel
-- No API key, one dependency (`requests`), no classes, plain readable code
+- REST API with 4 endpoints and interactive docs at `/docs` (FastAPI)
+- PostgreSQL cache: the first request for a ticker pulls from the SEC, later ones read from the database, and a refresh endpoint pulls again
+- Plain SQL with `psycopg`, no ORM
+- No API key, no classes, plain readable code. The CLI still needs only `requests`, the API adds FastAPI and psycopg
 
 ## Demo output
 
@@ -80,14 +85,151 @@ Folder contents:
 
 | File | What it does |
 |---|---|
-| `financial_analysis.py` | entry point, asks for the ticker and runs the steps |
+| `financial_analysis.py` | entry point, asks for the ticker and runs the steps. Also exposes `analyze_ticker`, used by the API |
 | `sec_data.py` | ticker lookup, download, quarter extraction, Q4 derivation, restatements |
 | `checks.py` | data quality checks that add flags (never change numbers) |
 | `metrics.py` | QoQ, YoY, operating margin, margin change |
 | `output.py` | formatting, printed table, CSV export |
+| `api.py` | FastAPI app with the 4 endpoints |
+| `db.py` | PostgreSQL connection, create tables, save, load, list |
+| `schema.sql` | table definitions for `companies` and `quarters` |
 | [`tests/`](tests/) | unittest tests with clearly fake numbers |
-| `requirements.txt` | the one dependency, `requests` |
-| `PLAN.md` | the build spec |
+| `requirements.txt` | `requests` for the CLI, FastAPI, uvicorn and psycopg for the API, httpx for tests |
+
+## API and database
+
+A small FastAPI app on top of the same analysis code. Results are cached in a local PostgreSQL database, so a ticker is only downloaded from the SEC once until you refresh it.
+
+### Set up PostgreSQL (macOS)
+
+Option 1, Postgres.app: download it from <https://postgresapp.com>, open it and click Initialize.
+
+Option 2, Homebrew:
+
+```
+brew install postgresql@16
+brew services start postgresql@16
+```
+
+On Apple Silicon, Homebrew may not put `psql` and `createdb` on your PATH. If the commands are not found:
+
+```
+echo 'export PATH="/opt/homebrew/opt/postgresql@16/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+Then create the database:
+
+```
+createdb financial_analyzer
+```
+
+### Environment variables
+
+```
+export DATABASE_URL="postgresql://localhost/financial_analyzer"
+export SEC_USER_AGENT="First Last you@example.com"
+```
+
+`DATABASE_URL` is optional, the value above is the default. `SEC_USER_AGENT` is required for the API, it never prompts for it like the CLI does.
+
+### Run it
+
+```
+python3 -m pip install -r requirements.txt
+python3 db.py
+uvicorn api:app --reload
+```
+
+`python3 db.py` creates the tables and is optional, the API also creates them on startup, so Postgres needs to be running first. Then open <http://127.0.0.1:8000/docs> for the interactive docs.
+
+### Endpoints
+
+| Method | Path | What it does |
+|---|---|---|
+| GET | `/health` | returns `{"status": "ok"}` |
+| GET | `/companies` | lists saved companies with fetch time and quarter count |
+| GET | `/companies/{ticker}/quarters` | saved copy if there is one, otherwise fetches from the SEC, saves and returns it |
+| POST | `/companies/{ticker}/refresh` | always fetches from the SEC, saves and returns the new data |
+
+Errors:
+
+| Status | Cause |
+|---|---|
+| 400 | invalid ticker |
+| 404 | ticker not found in the SEC list |
+| 500 | `SEC_USER_AGENT` is not set |
+| 502 | SEC download or data problem |
+| 503 | database not reachable |
+
+### Example calls
+
+Placeholders only, the real response has actual values. `source` is `"database"` for a cached copy and `"sec"` for a fresh fetch.
+
+```
+curl http://127.0.0.1:8000/companies/<TICKER>/quarters
+```
+
+```json
+{
+  "ticker": "<TICKER>",
+  "cik": 0,
+  "company_name": "<Company Name>",
+  "revenue_tag": "<RevenueTag>",
+  "operating_income_tag": "OperatingIncomeLoss",
+  "fetched_at": "20XX-XX-XXTXX:XX:XXZ",
+  "source": "database",
+  "warnings": [],
+  "quarters": [
+    {
+      "fiscal_label": "FY20XX Q1",
+      "period_start": "20XX-XX-XX",
+      "period_end": "20XX-XX-XX",
+      "revenue": 0,
+      "operating_income": 0,
+      "qoq_growth": 0.0,
+      "yoy_growth": 0.0,
+      "operating_margin": 0.0,
+      "margin_change_qoq": 0.0,
+      "margin_change_yoy": 0.0,
+      "flags": []
+    }
+  ]
+}
+```
+
+```
+curl -X POST http://127.0.0.1:8000/companies/<TICKER>/refresh
+curl http://127.0.0.1:8000/companies
+```
+
+```json
+[
+  {"ticker": "<TICKER>", "company_name": "<Company Name>", "fetched_at": "20XX-XX-XXTXX:XX:XXZ", "quarter_count": 8}
+]
+```
+
+### Database tables
+
+Defined in [`schema.sql`](schema.sql), plain SQL with no ORM.
+
+| Table | Columns |
+|---|---|
+| `companies` | `ticker` (primary key), `cik`, `company_name`, `revenue_tag`, `operating_income_tag`, `warnings`, `fetched_at` |
+| `quarters` | `ticker`, `period_end`, `period_start`, `fiscal_label`, `revenue`, `operating_income`, `qoq_growth`, `yoy_growth`, `operating_margin`, `margin_change_qoq`, `margin_change_yoy`, `flags` |
+
+`quarters` has the primary key (`ticker`, `period_end`) and a foreign key to `companies(ticker)` with `ON DELETE CASCADE`. Dollar values are stored as whole numbers, growth and margins as decimals (`0.1` means 10%).
+
+How the cache works:
+
+- Saving is one transaction: upsert the company row, replace that ticker's quarters. A failure never leaves half a company.
+- The cache does not expire on its own. Use the refresh endpoint to update it, and check `fetched_at` to see how old a copy is.
+
+Look at what is stored:
+
+```
+psql financial_analyzer -c "SELECT ticker, company_name, fetched_at FROM companies;"
+```
 
 ## Data source
 
@@ -116,6 +258,12 @@ ticker -> CIK -> company facts -> quarters -> checks -> metrics -> table / CSV
 4. `build_quarter_rows` joins revenue and operating income into rows, oldest to newest.
 5. `calculate_all_metrics` runs on all rows so the oldest shown quarter still gets YoY.
 6. The last 8 rows are kept, `run_all_checks` adds flags to them, then they are printed and optionally exported.
+
+The API path reuses the same steps through `analyze_ticker`:
+
+```
+request -> load_company -> (miss) analyze_ticker -> save_company -> response
+```
 
 Row shape (growth and margins are decimals, `0.1` means 10%):
 
@@ -189,12 +337,21 @@ From the project folder:
 python3 -m unittest discover tests
 ```
 
-Tests use only the standard library, no network, and made-up round numbers (see `tests/fake_data.py`). They cover:
+The existing tests use only the standard library, no network, and made-up round numbers (see `tests/fake_data.py`). `test_api.py` needs the requirements installed (FastAPI `TestClient`, with the database and the SEC mocked, so no network or Postgres). `test_db.py` only runs when `TEST_DATABASE_URL` is set:
+
+```
+createdb financial_analyzer_test
+TEST_DATABASE_URL="postgresql://localhost/financial_analyzer_test" python3 -m unittest discover tests
+```
+
+They cover:
 
 - [`test_sec_data.py`](tests/test_sec_data.py): ticker cleanup, tag choice, latest value on restatement, Q4 derivation, N/A Q4 row when a quarter is missing, ignoring YTD and 8-K entries, non-USD warning, missing-metric flags
 - [`test_metrics.py`](tests/test_metrics.py): percent change edge cases, QoQ skipped across gaps, YoY matched by date, zero revenue margin, margin change in points
 - [`test_checks.py`](tests/test_checks.py): gap detection, zero revenue, operating income larger than revenue
 - [`test_output.py`](tests/test_output.py): money, percent and points formatting, CSV header and blanks
+- [`test_api.py`](tests/test_api.py): the 4 endpoints, cached read vs fetch, refresh, and the 400, 404, 502, 503 and missing User-Agent errors
+- [`test_db.py`](tests/test_db.py): save then load round trip, a second save replaces quarters, company list with quarter counts (needs a real Postgres)
 
 ## Limitations
 
@@ -210,8 +367,9 @@ Tests use only the standard library, no network, and made-up round numbers (see 
 - Chart of the margin trend
 - Compare two tickers side by side
 - IFRS / 20-F support
-- Cache downloads to avoid repeat requests
 - More metrics (net income, cash flow)
+- Cache expiry so old copies refresh on their own
+- Docker Compose for the API and Postgres
 
 ## Contributing
 

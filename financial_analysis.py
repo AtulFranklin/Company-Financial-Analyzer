@@ -42,21 +42,30 @@ def ask_to_export(rows: list, ticker: str) -> None:
     print(f"Saved {filename}")
 
 
+def analyze_ticker(ticker: str) -> dict:
+    """Load SEC data, add metrics and checks, keep the last quarters."""
+    data = get_company_data(ticker)
+    all_rows = data["rows"]
+    calculate_all_metrics(all_rows)  # all rows, so oldest shown quarter still gets YoY
+    rows = all_rows[-QUARTERS_TO_SHOW:]
+    check_warnings = run_all_checks(rows, QUARTERS_TO_SHOW)
+    data["rows"] = rows
+    data["warnings"] = list(data["warnings"]) + check_warnings
+    return data
+
+
 def main() -> None:
     """Ask for a ticker, load data, print the table, optionally export CSV."""
     ticker = ask_for_ticker()
     print(f"Loading {ticker} from SEC EDGAR...")
     try:
-        data = get_company_data(ticker)
+        data = analyze_ticker(ticker)
     except (ValueError, RuntimeError) as error:
         print(f"Error: {error}")
         return
 
-    all_rows = data["rows"]
-    calculate_all_metrics(all_rows)  # all rows, so oldest shown quarter still gets YoY
-    rows = all_rows[-QUARTERS_TO_SHOW:]
-    check_warnings = run_all_checks(rows, QUARTERS_TO_SHOW)
-    warnings = list(data["warnings"]) + check_warnings
+    rows = data["rows"]
+    warnings = data["warnings"]
 
     print()
     print(f"Company: {data['company_name']} ({data['ticker']}), CIK {data['cik']}")
